@@ -12,12 +12,15 @@ fn main() {
     let pool = ThreadPool::new(4);
 
     for stream in listener.incoming() {
+        //.take(2)
         let stream: TcpStream = stream.unwrap();
         println!("Connection Established");
 
         pool.execute(|| {
             handle_connection(stream);
         });
+
+        println!("Shutting down server! ");
     }
 }
 

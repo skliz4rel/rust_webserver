@@ -5,9 +5,14 @@ use std::thread::{self, Thread}; //channels for passing messages amongs threads
 //Job is a triat object. So we use trait object here so all kinds of jobs can be passed to execute method.
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
+enum Message {
+    NewJob(Job),
+    Terminate,
+}
+
 pub struct ThreadPool {
     workers: Vec<Worker>,
-    sender: mpsc::Sender<Job>,
+    sender: mpsc::Sender<Message>,
 }
 
 impl ThreadPool {
@@ -24,7 +29,7 @@ impl ThreadPool {
         let (sender, reciever) = mpsc::channel();
 
         //Mutex is for mutability and Arc is a smartpointer for multiple reference that is thread safe.
-        let receiver: Arc<Mutex<Receiver<Job>>> = Arc::new(Mutex::new(reciever));
+        let receiver: Arc<Mutex<Receiver<Message>>> = Arc::new(Mutex::new(reciever));
 
         let mut workers: Vec<Worker> = Vec::with_capacity(size);
 
@@ -41,30 +46,60 @@ impl ThreadPool {
         F: FnOnce() + Send + 'static,
     {
         let job = Box::new(f);
-        self.sender.send(job).unwrap();
+        self.sender.send(Message::NewJob(job)).unwrap();
     }
 }
 
 struct Worker {
     id: usize,
-    thread: thread::JoinHandle<()>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Worker {
-    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Message>>>) -> Worker {
         //Loop makes the thread work in a continous circle.
         let thread = thread::spawn(move || {
             loop {
                 //now we need to get the job here from the receiver
 
-                let job: Box<dyn FnOnce() + Send> = receiver.lock().unwrap().recv().unwrap();
+                let message = receiver.lock().unwrap().recv().unwrap();
 
-                println!("Worker {} got a job; executing.", id);
-
-                job();
+                match message {
+                    Message::NewJob(job) => {
+                        println!("Worker {} got a job, executing,", id);
+                        job();
+                    }
+                    Message::Terminate => {
+                        println!("Worker {} was told to terminate", id);
+                        break;
+                    }
+                }
             }
         });
 
-        Worker { id, thread }
+        Worker {
+            id,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        print!("sending terminate mesage to all workers. ");
+
+        for _ in &self.workers {
+            self.sender.send(Message::Terminate).unwrap();
+        }
+
+        println!("Shutting down all workers. ");
+
+        for worker in &mut self.workers {
+            println!("Shutting down worker {}", worker.id);
+
+            if let Some(thread) = worker.thread.take() {
+                thread.join().unwrap();
+            }
+        }
     }
 }
